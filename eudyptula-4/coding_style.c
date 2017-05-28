@@ -1,6 +1,5 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <asm/delay.h>
 #include <linux/slab.h>
 
 int do_work(int *my_int, int retval)
