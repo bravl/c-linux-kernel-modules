@@ -7,14 +7,15 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Hello");
 MODULE_VERSION("1.0");
 
-static int __init module_load(void) {
-	printk("Hello World!\n");
+static int __init module_load(void)
+{
+	pr_info("Hello World!\n");
 	return 0;
 }
 
-static void __exit module_unload(void) {
-	printk("Bye Bye World!\n");
-	return;
+static void __exit module_unload(void)
+{
+	pr_info("Bye Bye World!\n");
 }
 
 module_init(module_load);
