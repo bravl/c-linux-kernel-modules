@@ -8,3 +8,4 @@
 *.order
 tags
 MOK.*
+.cache.mk
