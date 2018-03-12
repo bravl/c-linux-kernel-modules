@@ -8,10 +8,11 @@
 
 //
 static struct fb_info *virtfb;
+static void *videomemory;
 
 static int virtfb_mmap(struct fb_info* info, struct vm_area_struct *vma)
 {
-        return remap_vmalloc_range(vma, (void*)info->fix.smem_start, vma->vm_pgoff); 
+        return remap_vmalloc_range(vma, (void*)virtfb->fix.smem_start, vma->vm_pgoff); 
 }
 
 static int virtfb_map_video_memory(struct fb_info *fbi)
@@ -20,7 +21,10 @@ static int virtfb_map_video_memory(struct fb_info *fbi)
                 fbi->fix.smem_len = fbi->var.yres_virtual *
                         fbi->fix.line_length;
 
-        fbi->fix.smem_start = (unsigned long)vmalloc_32(fbi->fix.smem_len);
+        videomemory = vmalloc_32_user(fbi->fix.smem_len);
+
+        fbi->screen_base = (char __iomem *)videomemory;
+        fbi->fix.smem_start = (unsigned long)videomemory;
 
         if (fbi->fix.smem_start == 0) {
                 dev_err(fbi->device, "Unable to allocate framebuffer memory\n");
@@ -33,15 +37,12 @@ static int virtfb_map_video_memory(struct fb_info *fbi)
 
         fbi->screen_size = fbi->fix.smem_len;
 
-        /* Clear the screen */
-        memset((char *)fbi->fix.smem_start, 0, fbi->fix.smem_len);
-
         return 0;
 }
 
 static int virtfb_unmap_video_memory(struct fb_info *fbi)
 {
-        vfree((void*)fbi->fix.smem_start);
+        vfree(videomemory);
 
         fbi->screen_base = 0;
 	fbi->fix.smem_start = 0;
