@@ -92,16 +92,17 @@ static int virtfb_check_var(struct fb_var_screeninfo *var,
         
         virtfb->var.bits_per_pixel = 24;
 
-        virtfb->var.red.length = 5;
-        virtfb->var.red.offset = 11;
+        /* RGB888 */
+        virtfb->var.red.length = 0;
+        virtfb->var.red.offset = 8;
         virtfb->var.red.msb_right = 0;
 
-        virtfb->var.green.length = 6;
-        virtfb->var.green.offset = 5;
+        virtfb->var.green.length = 8;
+        virtfb->var.green.offset = 8;
         virtfb->var.green.msb_right = 0;
 
-        virtfb->var.blue.length = 5;
-        virtfb->var.blue.offset = 0;
+        virtfb->var.blue.length = 8;
+        virtfb->var.blue.offset = 16;
         virtfb->var.blue.msb_right = 0;
 
         virtfb->var.transp.length = 0;

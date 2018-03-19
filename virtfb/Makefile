@@ -1,4 +1,4 @@
-obj-m+=virtfb.o
+obj-m+=virtfb_platform.o
 
 all:
 	make -C $(SOURCE_DIR) M=$(PWD) modules
