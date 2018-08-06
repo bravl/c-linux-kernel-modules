@@ -27,6 +27,7 @@
 
 static int pcm_substream = 1;
 static int pcm_dev = 1;
+static int buffer_counter = 0;
 
 struct alsa_gpio_timer_ops {
         int (*create)(struct snd_pcm_substream *);
@@ -60,11 +61,11 @@ struct alsa_gpio_model {
 static struct alsa_gpio_model model_gpio = {
         .name = "alsa_gpio",
         .formats = SNDRV_PCM_FMTBIT_U8,
-        .channels_min = 2,
-        .channels_max = 2,
+        .channels_min = USE_CHANNELS_MIN,
+        .channels_max = USE_CHANNELS_MAX,
         .rates = SNDRV_PCM_RATE_8000,
-        .rate_min = 8000,
-        .rate_max = 8000,
+        .rate_min = USE_RATE_MIN,
+        .rate_max = USE_RATE_MAX,
 };
 
 
@@ -131,6 +132,7 @@ static int alsa_gpio_systimer_start(struct snd_pcm_substream *substream)
 {
         struct alsa_gpio_systimer_pcm *dpcm = substream->runtime->private_data;
         spin_lock(&dpcm->lock);
+        buffer_counter = 0;
         dpcm->base_time = jiffies;
         alsa_gpio_systimer_rearm(dpcm);
         spin_unlock(&dpcm->lock);
@@ -163,6 +165,7 @@ static int alsa_gpio_systimer_prepare(struct snd_pcm_substream *substream)
 
 static void alsa_gpio_systimer_callback(struct timer_list *t)
 {
+        int tmp_bufsize = 0;
         pr_info("Systimer callback\n");
         struct alsa_gpio_systimer_pcm *dpcm = from_timer(dpcm, t, timer);
         unsigned long flags;
@@ -174,8 +177,16 @@ static void alsa_gpio_systimer_callback(struct timer_list *t)
         elapsed = dpcm->elapsed;
         dpcm->elapsed = 0;
         
-        pr_info("bytes: %ld\n", dpcm->substream->runtime->dma_bytes);
-        memcpy(dpcm->substream->runtime->dma_area, music, 8000);
+        tmp_bufsize = dpcm->substream->runtime->dma_bytes / 2;
+
+        memcpy(dpcm->substream->runtime->dma_area, &music[tmp_bufsize * buffer_counter], 
+                        dpcm->substream->runtime->dma_bytes);
+        
+        if ((tmp_bufsize * buffer_counter) == 48000)
+                buffer_counter = 0;
+        else
+                buffer_counter++;
+
         spin_unlock_irqrestore(&dpcm->lock, flags);
         if (elapsed)
                 snd_pcm_period_elapsed(dpcm->substream);
@@ -236,6 +247,7 @@ static int alsa_gpio_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
                         return get_alsa_gpio_ops(substream)->start(substream);
                 case SNDRV_PCM_TRIGGER_STOP:
                 case SNDRV_PCM_TRIGGER_SUSPEND:
+                        pr_info("Stopping timer\n");
                         return get_alsa_gpio_ops(substream)->stop(substream);
         }
         return -EINVAL;
