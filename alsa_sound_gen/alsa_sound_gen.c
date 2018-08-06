@@ -39,6 +39,8 @@
 #include <sound/initval.h>
 #include <sound/pcm.h>
 
+#include "music_gen.h"
+
 MODULE_AUTHOR("Bram Vlerick <vlerickb@gmail.com>");
 MODULE_DESCRIPTION("PCM Sound generator");
 MODULE_LICENSE("GPL");
@@ -96,7 +98,6 @@ static void snd_pcm_timer_update(struct snd_pcm_timer *dpcm)
         unsigned long delta;
 
         delta = jiffies - dpcm->base_time;
-        printk("Delta: %ld\n", delta);
         if (!delta)
                 return;
         dpcm->base_time += delta;
@@ -117,7 +118,6 @@ static int snd_pcm_timer_start(struct snd_pcm_substream *substream)
         struct snd_pcm_timer *dpcm = substream->runtime->private_data;
         spin_lock(&dpcm->lock);
         dpcm->base_time = jiffies;
-        printk("Jiffies: %ld\n", jiffies);
         snd_pcm_timer_rearm(dpcm);
         spin_unlock(&dpcm->lock);
         return 0;
@@ -167,6 +167,11 @@ static void snd_pcm_timer_callback(struct timer_list *t)
         elapsed = dpcm->elapsed;
         dpcm->elapsed = 0;
         
+        memcpy(dpcm->substream->runtime->dma_area,
+               music, dpcm->substream->runtime->dma_bytes);
+
+//        memset(dpcm->substream->runtime->dma_area, 0x80, 
+//                2000);
         spin_unlock_irqrestore(&dpcm->lock, flags);
         if (elapsed)
                 snd_pcm_period_elapsed(dpcm->substream);
@@ -178,14 +183,9 @@ static snd_pcm_uframes_t snd_pcm_timer_pointer(struct
         struct snd_pcm_timer *dpcm = substream->runtime->private_data;
         snd_pcm_uframes_t pos;
 
-        pr_info("PCM Timer pointer\n");
-
         spin_lock(&dpcm->lock);
-        pr_info("Before timer update\n");
         snd_pcm_timer_update(dpcm);
-        pr_info("After timer update\n");
         pos = dpcm->frac_pos / HZ;
-        pr_info("Pointer: %ld",pos);
         spin_unlock(&dpcm->lock);
         return pos;
 }
@@ -227,11 +227,11 @@ static struct snd_pcm_hardware snd_soundgen_hw = {
         .info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
                         SNDRV_PCM_INFO_BLOCK_TRANSFER | 
                         SNDRV_PCM_INFO_MMAP_VALID),
-        .formats = SNDRV_PCM_FMTBIT_U8,
+        .formats = SNDRV_PCM_FMTBIT_S8,
         .rates = SNDRV_PCM_RATE_8000,
         .rate_min = 8000,
         .rate_max = 8000,
-        .channels_min = 1,
+        .channels_min = 2,
         .channels_max = 2,
         .buffer_bytes_max = 32768,
         .period_bytes_min = 64,

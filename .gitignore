@@ -1,3 +1,6 @@
+*.wav
+alsa_test
+gen_music
 *.swp
 .tmp_versions/
 *.ko
