@@ -69,6 +69,140 @@ struct snd_timer_ops {
 };
 
 
+/*
+ * hrtimer interface
+ */
+
+struct dummy_hrtimer_pcm {
+	/* ops must be the first item */
+	const struct snd_timer_ops *timer_ops;
+	ktime_t base_time;
+	ktime_t period_time;
+	atomic_t running;
+	struct hrtimer timer;
+	struct snd_pcm_substream *substream;
+};
+
+static enum hrtimer_restart dummy_hrtimer_callback(struct hrtimer *timer)
+{
+	struct dummy_hrtimer_pcm *dpcm;
+        u64 delta;
+	u32 pos;
+        struct snd_pcm_runtime *runtime;
+
+	dpcm = container_of(timer, struct dummy_hrtimer_pcm, timer);
+	if (!atomic_read(&dpcm->running))
+		return HRTIMER_NORESTART;
+        runtime = dpcm->substream->runtime;
+	/*
+	 * In cases of XRUN and draining, this calls .trigger to stop PCM
+	 * substream.
+	 */
+	delta = ktime_us_delta(hrtimer_cb_get_time(&dpcm->timer),
+			       dpcm->base_time);
+	delta = div_u64(delta * runtime->rate + 999999, 1000000);
+	div_u64_rem(delta, runtime->buffer_size, &pos);
+        
+        snd_pcm_period_elapsed(dpcm->substream);
+	if (!atomic_read(&dpcm->running))
+		return HRTIMER_NORESTART;
+
+	hrtimer_forward_now(timer, dpcm->period_time);
+	return HRTIMER_RESTART;
+}
+
+static int dummy_hrtimer_start(struct snd_pcm_substream *substream)
+{
+	struct dummy_hrtimer_pcm *dpcm = substream->runtime->private_data;
+        struct snd_pcm_runtime *runtime = substream->runtime;
+        memset(runtime->dma_area,0x99,runtime->dma_bytes); 
+	dpcm->base_time = hrtimer_cb_get_time(&dpcm->timer);
+	hrtimer_start(&dpcm->timer, dpcm->period_time, HRTIMER_MODE_REL_SOFT);
+	atomic_set(&dpcm->running, 1);
+	return 0;
+}
+
+static int dummy_hrtimer_stop(struct snd_pcm_substream *substream)
+{
+	struct dummy_hrtimer_pcm *dpcm = substream->runtime->private_data;
+
+	atomic_set(&dpcm->running, 0);
+	if (!hrtimer_callback_running(&dpcm->timer))
+		hrtimer_cancel(&dpcm->timer);
+	return 0;
+}
+
+static inline void dummy_hrtimer_sync(struct dummy_hrtimer_pcm *dpcm)
+{
+	hrtimer_cancel(&dpcm->timer);
+}
+
+static snd_pcm_uframes_t
+dummy_hrtimer_pointer(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct dummy_hrtimer_pcm *dpcm = runtime->private_data;
+	u64 delta;
+	u32 pos;
+
+	delta = ktime_us_delta(hrtimer_cb_get_time(&dpcm->timer),
+			       dpcm->base_time);
+	delta = div_u64(delta * runtime->rate + 999999, 1000000);
+	div_u64_rem(delta, runtime->buffer_size, &pos);
+        pr_debug("Position: %d\n",pos);
+	return pos;
+}
+
+static int dummy_hrtimer_prepare(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct dummy_hrtimer_pcm *dpcm = runtime->private_data;
+	unsigned int period, rate;
+	long sec;
+	unsigned long nsecs;
+
+	dummy_hrtimer_sync(dpcm);
+	period = runtime->period_size;
+	rate = runtime->rate;
+	sec = period / rate;
+	period %= rate;
+	nsecs = div_u64((u64)period * 1000000000UL + rate - 1, rate);
+	dpcm->period_time = ktime_set(sec, nsecs);
+
+	return 0;
+}
+
+static int dummy_hrtimer_create(struct snd_pcm_substream *substream)
+{
+	struct dummy_hrtimer_pcm *dpcm;
+
+	dpcm = kzalloc(sizeof(*dpcm), GFP_KERNEL);
+	if (!dpcm)
+		return -ENOMEM;
+	substream->runtime->private_data = dpcm;
+	hrtimer_init(&dpcm->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	dpcm->timer.function = dummy_hrtimer_callback;
+	dpcm->substream = substream;
+	atomic_set(&dpcm->running, 0);
+	return 0;
+}
+
+static void dummy_hrtimer_free(struct snd_pcm_substream *substream)
+{
+	struct dummy_hrtimer_pcm *dpcm = substream->runtime->private_data;
+	dummy_hrtimer_sync(dpcm);
+	kfree(dpcm);
+}
+
+static const struct snd_timer_ops dummy_hrtimer_ops = {
+	.create =	dummy_hrtimer_create,
+	.free =		dummy_hrtimer_free,
+	.prepare =	dummy_hrtimer_prepare,
+	.start =	dummy_hrtimer_start,
+	.stop =		dummy_hrtimer_stop,
+	.pointer =	dummy_hrtimer_pointer,
+};
+
 #define get_timer_ops(substream) \
 (*(const struct snd_timer_ops **)(substream)->runtime->private_data)
 
@@ -89,6 +223,8 @@ struct snd_pcm_timer {
 
 static void snd_pcm_timer_rearm(struct snd_pcm_timer *dpcm)
 {
+        pr_debug("rearming with %d ms\n",
+                        (dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
         mod_timer(&dpcm->timer, jiffies +
                         (dpcm->frac_period_rest + dpcm->rate - 1) / dpcm->rate);
 }
@@ -166,12 +302,13 @@ static void snd_pcm_timer_callback(struct timer_list *t)
         snd_pcm_timer_rearm(dpcm);
         elapsed = dpcm->elapsed;
         dpcm->elapsed = 0;
-        
+        pr_debug("elapsed = %d\n",elapsed);
+       
+        // This needs an algorithm to check the current position,
+        // update the offset and copy data to the correct offset.
         memcpy(dpcm->substream->runtime->dma_area,
                music, dpcm->substream->runtime->dma_bytes);
 
-//        memset(dpcm->substream->runtime->dma_area, 0x80, 
-//                2000);
         spin_unlock_irqrestore(&dpcm->lock, flags);
         if (elapsed)
                 snd_pcm_period_elapsed(dpcm->substream);
@@ -186,6 +323,7 @@ static snd_pcm_uframes_t snd_pcm_timer_pointer(struct
         spin_lock(&dpcm->lock);
         snd_pcm_timer_update(dpcm);
         pos = dpcm->frac_pos / HZ;
+        pr_debug("Pointer pos %ld\n",pos);
         spin_unlock(&dpcm->lock);
         return pos;
 }
@@ -223,7 +361,7 @@ static const struct snd_timer_ops snd_pcm_timer_ops = {
  * End of timer stuff
  */
 
-static struct snd_pcm_hardware snd_soundgen_hw = {
+static const struct snd_pcm_hardware snd_soundgen_hw = {
         .info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
                         SNDRV_PCM_INFO_BLOCK_TRANSFER | 
                         SNDRV_PCM_INFO_MMAP_VALID),
@@ -231,8 +369,8 @@ static struct snd_pcm_hardware snd_soundgen_hw = {
         .rates = SNDRV_PCM_RATE_8000,
         .rate_min = 8000,
         .rate_max = 8000,
-        .channels_min = 2,
-        .channels_max = 2,
+        .channels_min = 1,
+        .channels_max = 1,
         .buffer_bytes_max = 32768,
         .period_bytes_min = 64,
         .period_bytes_max = 32768,
@@ -256,13 +394,13 @@ static int soundgen_pcm_open(struct snd_pcm_substream *substream)
         struct snd_pcm_runtime *runtime = substream->runtime;
         pr_info("Opening PCM\n");
 
-        err = snd_pcm_timer_ops.create(substream);
+        err = dummy_hrtimer_ops.create(substream);
         if (err < 0) {
                 pr_err("Failed to create timer\n");
                 return -1;
         }
 
-        get_timer_ops(substream) = &snd_pcm_timer_ops;
+        get_timer_ops(substream) = &dummy_hrtimer_ops;
 
         runtime->hw = snd_soundgen_hw;
         chip->pcm_hw = runtime->hw;
@@ -305,9 +443,11 @@ static int soundgen_pcm_prepare(struct snd_pcm_substream *substream)
         struct snd_pcm_runtime *runtime = substream->runtime;
         pr_info("PCM Prepare\n");
 
-        pr_debug("Format %d", runtime->format);
-        pr_debug("Rate %d", runtime->rate);
-        pr_debug("Channels %d", runtime->channels);
+        pr_debug("Format %d\n", runtime->format);
+        pr_debug("Rate %d\n", runtime->rate);
+        pr_debug("Channels %d\n", runtime->channels);
+        pr_debug("Buffer size %ld\n", runtime->buffer_size);
+        pr_debug("Period size %ld\n", runtime->period_size);
 
         return get_timer_ops(substream)->prepare(substream);
 }
@@ -328,7 +468,7 @@ static int soundgen_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 static snd_pcm_uframes_t soundgen_pcm_pointer(struct snd_pcm_substream *substream)
 {
-        pr_info("PCM Pointer\n");
+        //pr_info("PCM Pointer\n");
         return get_timer_ops(substream)->pointer(substream);
 }
 
